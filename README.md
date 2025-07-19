@@ -111,6 +111,32 @@ The enhanced setup also supports:
 - **Azure OpenAI**: Enterprise deployments
 - **Local Models**: Via Ollama integration
 
+### Ollama Local Models Setup
+For completely local AI operations without cloud dependencies:
+
+1. **Install Ollama** on your host machine: [ollama.ai](https://ollama.ai/)
+
+2. **Pull required models**:
+   ```bash
+   ollama pull qwen2.5-coder:7b
+   ollama pull nomic-embed-text:latest
+   ```
+
+3. **Configure .env for Ollama**:
+   ```bash
+   # Ollama Configuration
+   OPENAI_API_KEY=ollama
+   MODEL_NAME=qwen2.5-coder:7b
+   SMALL_MODEL_NAME=qwen2.5-coder:7b
+   EMBEDDER_MODEL_NAME=nomic-embed-text:latest
+   OPENAI_BASE_URL=http://host.docker.internal:11434/v1
+   SEMAPHORE_LIMIT=1
+   ```
+
+4. **Start with Docker**: `docker-compose up -d`
+
+The Docker container automatically connects to your host Ollama instance.
+
 ## 🛠 Development Commands
 
 ### From Project Root
