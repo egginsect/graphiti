@@ -23,10 +23,12 @@ from graphiti_core.edges import EntityEdge
 from graphiti_core.embedder.azure_openai import AzureOpenAIEmbedderClient
 from graphiti_core.embedder.client import EmbedderClient
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
+from graphiti_core.embedder.gemini import GeminiEmbedder, GeminiEmbedderConfig
 from graphiti_core.llm_client import LLMClient
 from graphiti_core.llm_client.azure_openai_client import AzureOpenAILLMClient
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.llm_client.openai_client import OpenAIClient
+from graphiti_core.llm_client.gemini_client import GeminiClient
 from graphiti_core.nodes import EpisodeType, EpisodicNode
 from graphiti_core.search.search_config_recipes import (
     NODE_HYBRID_SEARCH_NODE_DISTANCE,
@@ -196,6 +198,7 @@ class GraphitiLLMConfig(BaseModel):
     model: str = DEFAULT_LLM_MODEL
     small_model: str = SMALL_LLM_MODEL
     temperature: float = 0.0
+    base_url: str | None = None
     azure_openai_endpoint: str | None = None
     azure_openai_deployment_name: str | None = None
     azure_openai_api_version: str | None = None
@@ -236,6 +239,7 @@ class GraphitiLLMConfig(BaseModel):
                 model=model,
                 small_model=small_model,
                 temperature=float(os.environ.get('LLM_TEMPERATURE', '0.0')),
+                base_url=os.environ.get('OPENAI_BASE_URL'),
             )
         else:
             # Setup for Azure OpenAI API
@@ -334,8 +338,21 @@ class GraphitiLLMConfig(BaseModel):
                 raise ValueError('OPENAI_API_KEY must be set when using Azure OpenAI API')
 
         if not self.api_key:
-            raise ValueError('OPENAI_API_KEY must be set when using OpenAI API')
+            raise ValueError('API key must be set')
+        
+        # Check if using Gemini via OpenAI-compatible endpoint
+        if (hasattr(self, 'base_url') and self.base_url and 
+            'generativelanguage.googleapis.com' in self.base_url):
+            # Gemini API setup
+            gemini_config = LLMConfig(
+                api_key=self.api_key,
+                model=self.model,
+                small_model=self.small_model,
+                temperature=self.temperature,
+            )
+            return GeminiClient(config=gemini_config)
 
+        # Default OpenAI API setup
         llm_client_config = LLMConfig(
             api_key=self.api_key, model=self.model, small_model=self.small_model
         )
@@ -354,6 +371,7 @@ class GraphitiEmbedderConfig(BaseModel):
 
     model: str = DEFAULT_EMBEDDER_MODEL
     api_key: str | None = None
+    base_url: str | None = None
     azure_openai_endpoint: str | None = None
     azure_openai_deployment_name: str | None = None
     azure_openai_api_version: str | None = None
@@ -408,6 +426,7 @@ class GraphitiEmbedderConfig(BaseModel):
             return cls(
                 model=model,
                 api_key=os.environ.get('OPENAI_API_KEY'),
+                base_url=os.environ.get('OPENAI_BASE_URL'),
             )
 
     def create_client(self) -> EmbedderClient | None:
@@ -440,7 +459,20 @@ class GraphitiEmbedderConfig(BaseModel):
                 logger.error('OPENAI_API_KEY must be set when using Azure OpenAI API')
                 return None
         else:
-            # OpenAI API setup
+            # Check if using Gemini via OpenAI-compatible endpoint
+            if (hasattr(self, 'base_url') and self.base_url and 
+                'generativelanguage.googleapis.com' in self.base_url):
+                # Gemini Embedder setup
+                if not self.api_key:
+                    return None
+                    
+                gemini_embedder_config = GeminiEmbedderConfig(
+                    api_key=self.api_key, 
+                    embedding_model=self.model
+                )
+                return GeminiEmbedder(config=gemini_embedder_config)
+            
+            # Default OpenAI API setup
             if not self.api_key:
                 return None
 
@@ -652,6 +684,8 @@ def format_fact_result(edge: EntityEdge) -> dict[str, Any]:
 episode_queues: dict[str, asyncio.Queue] = {}
 # Dictionary to track if a worker is running for each group_id
 queue_workers: dict[str, bool] = {}
+# Dictionary to store background task references to prevent garbage collection
+background_tasks: dict[str, asyncio.Task] = {}
 
 
 async def process_episode_queue(group_id: str):
@@ -660,7 +694,7 @@ async def process_episode_queue(group_id: str):
     This function runs as a long-lived task that processes episodes
     from the queue one at a time.
     """
-    global queue_workers
+    global queue_workers, background_tasks
 
     logger.info(f'Starting episode queue worker for group_id: {group_id}')
     queue_workers[group_id] = True
@@ -685,6 +719,9 @@ async def process_episode_queue(group_id: str):
         logger.error(f'Unexpected error in queue worker for group_id {group_id}: {str(e)}')
     finally:
         queue_workers[group_id] = False
+        # Clean up task reference when worker finishes
+        background_tasks.pop(group_id, None)
+        logger.info(f'Episode queue worker for group_id {group_id} finished and cleaned up')
         logger.info(f'Stopped episode queue worker for group_id: {group_id}')
 
 
@@ -814,7 +851,22 @@ async def add_memory(
 
         # Start a worker for this queue if one isn't already running
         if not queue_workers.get(group_id_str, False):
-            asyncio.create_task(process_episode_queue(group_id_str))
+            logger.info(f'Creating background task for group_id: {group_id_str}')
+            task = asyncio.create_task(process_episode_queue(group_id_str))
+            background_tasks[group_id_str] = task
+            
+            # Add cleanup callback when task completes
+            def cleanup_task(task_future):
+                if task_future.cancelled():
+                    logger.info(f'Background task for group_id {group_id_str} was cancelled')
+                elif task_future.exception():
+                    logger.error(f'Background task for group_id {group_id_str} failed: {task_future.exception()}')
+                else:
+                    logger.info(f'Background task for group_id {group_id_str} completed')
+                background_tasks.pop(group_id_str, None)
+            
+            task.add_done_callback(cleanup_task)
+            logger.info(f'Background task created and stored: {task}')
 
         # Return immediately with a success message
         return SuccessResponse(
