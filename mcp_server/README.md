@@ -166,6 +166,42 @@ Before running the Docker Compose setup, you need to configure the environment v
      OPENAI_API_KEY=your_key MODEL_NAME=gpt-4.1-mini docker compose up
      ```
 
+#### Ollama Configuration
+
+The Graphiti MCP server can be configured to use local Ollama models instead of cloud-based LLM providers. This is useful for running completely local AI operations.
+
+To configure Ollama:
+
+1. **Install and start Ollama** on your host machine following the [Ollama installation guide](https://ollama.ai/)
+
+2. **Pull the required models**:
+   ```bash
+   ollama pull qwen2.5-coder:7b
+   ollama pull nomic-embed-text:latest
+   ```
+
+3. **Update your .env file** with Ollama configuration:
+   ```
+   # Ollama Configuration
+   OPENAI_API_KEY=ollama
+   MODEL_NAME=qwen2.5-coder:7b
+   SMALL_MODEL_NAME=qwen2.5-coder:7b
+   EMBEDDER_MODEL_NAME=nomic-embed-text:latest
+   
+   # For Docker: use host.docker.internal to access host machine's Ollama
+   OPENAI_BASE_URL=http://host.docker.internal:11434/v1
+   
+   # Optional: Reduce concurrency for local models
+   SEMAPHORE_LIMIT=1
+   ```
+
+4. **Start the service** using Docker Compose as usual:
+   ```bash
+   docker compose up
+   ```
+
+The Docker container will connect to your host machine's Ollama instance using `host.docker.internal:11434`.
+
 #### Neo4j Configuration
 
 The Docker Compose setup includes a Neo4j container with the following default configuration:
